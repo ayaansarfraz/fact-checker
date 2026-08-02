@@ -32,9 +32,16 @@ Every claim verdict must be one of: `true`, `false`, `misleading`, `unverifiable
 ## Commands
 
 ```bash
-npm run dev       # local dev server
+npm run dev        # local dev server
+npm run build      # production build (also typechecks)
+npm run typecheck  # tsc --noEmit
+npm run lint       # eslint
+
+# End-to-end pipeline, no UI (build order step 5). Needs ANTHROPIC_API_KEY in .env.local.
+npm run factcheck -- "<youtube-url>" [--limit N] [--concurrency N] [--json out.json]
 ```
-(update this section as real commands get added, e.g. test/lint/build)
+Verification calls the model with web search once per claim, so a full speech is
+slow and not free — use `--limit` when smoke-testing.
 
 ## Rules for fixing mistakes
 
@@ -46,4 +53,5 @@ When you (Claude) make a mistake, get corrected by the user, or hit a bug caused
 
 ## Lessons learned
 
-(empty, will be filled in as mistakes get caught and fixed)
+- `lib/anthropic.ts` imports `server-only`, which throws when imported outside Next's react-server condition. Anything running the pipeline as a plain Node script (e.g. `scripts/factcheck.ts`) must run with `--conditions=react-server`, which is why `npm run factcheck` goes through `tsx` with that flag.
+- Parallel stage agents share this one working tree and HEAD, so another agent's `git commit` can land on your branch and their file writes can overwrite yours mid-task. Work in your own `git worktree` (or at minimum verify `git log` before opening a PR) instead of assuming the branch only contains your commits.

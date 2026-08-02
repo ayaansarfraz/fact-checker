@@ -1,8 +1,5 @@
-import type { FeedItem, FeedError, Statement, VerifiedClaim } from "@/lib/types";
-import { getTranscript } from "@/lib/transcript";
-import { chunkTranscript } from "@/lib/chunk";
-import { extractClaims } from "@/lib/extract";
-import { verifyClaim } from "@/lib/verify";
+import type { FeedError, FeedItem } from "@/lib/types";
+import { runPipeline } from "@/lib/pipeline";
 
 /**
  * The Anthropic SDK + outbound web-search network calls need Node APIs, so this
@@ -10,18 +7,13 @@ import { verifyClaim } from "@/lib/verify";
  */
 export const runtime = "nodejs";
 
-/** How many statements to extract+verify at once (bounded fan-out). */
-const CONCURRENCY = 4;
-
 /**
  * Streaming fact-check pipeline.
  *
  * POST { url } -> SSE stream of FeedItem / FeedError frames.
  *
- * Pipeline:
- *   getTranscript(url) -> chunkTranscript(raw) -> [extractClaims -> verifyClaim]*
- *
- * Frames (see the SSE contract in lib/types.ts):
+ * Stage orchestration lives in `lib/pipeline.ts`; this route only turns the
+ * pipeline's callbacks into SSE frames (see the contract in lib/types.ts):
  *   event: item  / data: <FeedItem JSON>   — one per processed statement
  *   event: error / data: <FeedError JSON>  — a stage failed
  *   event: done  / data: {}                — pipeline finished
@@ -64,13 +56,12 @@ export async function POST(req: Request): Promise<Response> {
         }
       };
 
-      const sendError = (stage: FeedError["stage"], err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        send("error", { stage, message } satisfies FeedError);
-      };
+      await runPipeline(videoUrl, {
+        onItem: (item: FeedItem) => send("item", item),
+        onError: (error: FeedError) => send("error", error),
+      });
 
-      const finish = () => {
-        if (closed) return;
+      if (!closed) {
         send("done", {});
         closed = true;
         try {
@@ -78,73 +69,7 @@ export async function POST(req: Request): Promise<Response> {
         } catch {
           // Already torn down by a client disconnect.
         }
-      };
-
-      // 1. Transcript (fatal — nothing to do without it).
-      let raw;
-      try {
-        raw = await getTranscript(videoUrl);
-      } catch (err) {
-        sendError("transcript", err);
-        finish();
-        return;
       }
-
-      // 2. Clean + chunk into statements (fatal).
-      let statements: Statement[];
-      try {
-        statements = await chunkTranscript(raw);
-      } catch (err) {
-        sendError("chunk", err);
-        finish();
-        return;
-      }
-
-      // 3 + 4. Per statement: extract claims, then verify each.
-      //        A failure here is scoped to one statement/claim — emit an error
-      //        frame for the failing stage and keep processing the rest.
-      const processStatement = async (statement: Statement) => {
-        let claims;
-        try {
-          claims = await extractClaims(statement);
-        } catch (err) {
-          sendError("extract", err);
-          return;
-        }
-
-        const settled = await Promise.allSettled(
-          claims.map((claim) => verifyClaim(claim)),
-        );
-
-        const verified: VerifiedClaim[] = [];
-        for (const result of settled) {
-          if (result.status === "fulfilled") verified.push(result.value);
-          else sendError("verify", result.reason);
-        }
-
-        // Emit the statement even if it produced no claims.
-        send("item", { statement, claims: verified } satisfies FeedItem);
-      };
-
-      // Bounded worker pool: workers pull the next statement index until drained.
-      let nextIndex = 0;
-      const worker = async () => {
-        while (nextIndex < statements.length) {
-          const index = nextIndex++;
-          await processStatement(statements[index]);
-        }
-      };
-
-      const poolSize = Math.min(CONCURRENCY, statements.length);
-      try {
-        await Promise.all(Array.from({ length: poolSize }, () => worker()));
-      } catch (err) {
-        // Defensive: processStatement swallows its own errors, so this only
-        // trips on something unexpected.
-        sendError("unknown", err);
-      }
-
-      finish();
     },
   });
 
