@@ -43,6 +43,34 @@ npm run factcheck -- "<youtube-url>" [--limit N] [--concurrency N] [--json out.j
 Verification calls the model with web search once per claim, so a full speech is
 slow and not free — use `--limit` when smoke-testing.
 
+## Parallel sessions
+
+Multiple Claude sessions work this repo at once. They share one checkout, so a
+session that works directly in `/Users/ayaansarfraz/Documents/fact-checker` will
+have its files overwritten and its branch moved by the others. This has already
+cost real work twice.
+
+Every session gets its own worktree before touching anything:
+
+```bash
+git -C /Users/ayaansarfraz/Documents/fact-checker fetch origin
+git -C /Users/ayaansarfraz/Documents/fact-checker worktree add \
+  .claude/worktrees/<task> -b feat/<task> origin/main
+cd /Users/ayaansarfraz/Documents/fact-checker/.claude/worktrees/<task>
+npm install   # worktrees don't share node_modules
+```
+
+Rules:
+- Never `git checkout` in the main checkout — that is someone else's workspace.
+- Branch from `origin/main`, not from whatever HEAD happens to be.
+- Run `git log --oneline origin/main..HEAD` before opening a PR and confirm every
+  commit is yours. If another session's commit is in there, you branched wrong.
+- One PR per part, and merge it before another session needs that file.
+- Clean up when done: `git worktree remove .claude/worktrees/<task>`.
+
+`.claude/worktrees/` is gitignored, so worktrees living there are invisible to
+every other session's `git status`.
+
 ## Rules for fixing mistakes
 
 When you (Claude) make a mistake, get corrected by the user, or hit a bug caused by a wrong assumption:
