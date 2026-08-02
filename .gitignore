@@ -37,6 +37,9 @@ yarn-error.log*
 # claude code local settings
 .claude/settings.local.json
 
+# git worktrees checked out inside the repo (parallel sessions)
+.claude/worktrees/
+
 # vercel
 .vercel
 
