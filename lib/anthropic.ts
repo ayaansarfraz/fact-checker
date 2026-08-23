@@ -14,8 +14,8 @@
 import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
 
-/** Default model for every stage. */
-export const MODEL = "claude-opus-4-8";
+/** Default model for every stage. Sonnet keeps cost down vs Opus for this call-heavy pipeline. */
+export const MODEL = "claude-sonnet-4-6";
 
 let _client: Anthropic | null = null;
 

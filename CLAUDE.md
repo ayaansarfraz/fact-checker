@@ -41,7 +41,8 @@ npm run lint       # eslint
 npm run factcheck -- "<youtube-url>" [--limit N] [--concurrency N] [--json out.json]
 ```
 Verification calls the model with web search once per claim, so a full speech is
-slow and not free — use `--limit` when smoke-testing.
+slow and not free — use `--limit` when smoke-testing. `--limit` also truncates
+chunking (not just extract/verify). The UI defaults to 20 statements.
 
 ## Parallel sessions
 

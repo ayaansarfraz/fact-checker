@@ -21,7 +21,9 @@ const USAGE = `Usage: npm run factcheck -- "<youtube-url>" [options]
 
 Options:
   --limit N         Only process the first N statements (default: all).
-  --concurrency N   Statements processed at once (default: ${DEFAULT_CONCURRENCY}).
+                    Applied before chunking, so a limited run does not
+                    reconstruct the whole speech.
+  --concurrency N   Claims verified at once (default: ${DEFAULT_CONCURRENCY}).
   --json <path>     Also write the full run to a JSON file.`;
 
 function parseArgs(argv: string[]): Args {

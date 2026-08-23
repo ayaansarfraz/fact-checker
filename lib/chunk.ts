@@ -22,6 +22,18 @@ const WINDOW_CHARS = 6000;
 /** Output cap per call. Reconstructed text runs longer than the raw input. */
 const MAX_TOKENS = 16000;
 
+/**
+ * When a statement limit is set, only feed this many raw chars per requested
+ * statement into the model (with a floor of one window). Avoids chunking a
+ * 55k-char speech when the caller only wants the first 10 statements.
+ */
+const CHARS_PER_STATEMENT_BUDGET = 400;
+
+export interface ChunkOptions {
+  /** Stop once this many statements are produced (and truncate input first). */
+  maxStatements?: number;
+}
+
 /** Shape Claude returns; private to this stage. */
 interface ChunkResponse {
   statements: { text: string }[];
@@ -75,14 +87,33 @@ const SYSTEM = [
  * Ids are assigned in speech order: "s-0", "s-1", ... `startTime` is an
  * approximation (see `approxStartTime`) and is omitted when the transcript
  * carries no caption cues.
+ *
+ * Pass `maxStatements` to keep smoke tests cheap: only the leading slice of
+ * the transcript is sent, and windowing stops once enough statements exist.
  */
-export async function chunkTranscript(raw: RawTranscript): Promise<Statement[]> {
-  const fullText = raw.fullText?.trim();
-  if (!fullText) return [];
+export async function chunkTranscript(
+  raw: RawTranscript,
+  options: ChunkOptions = {},
+): Promise<Statement[]> {
+  const original = raw.fullText?.trim();
+  if (!original) return [];
 
+  const maxStatements = options.maxStatements;
+  const fullText =
+    maxStatements !== undefined
+      ? truncateForLimit(original, maxStatements)
+      : original;
+
+  // Timestamps are fractions of the *original* speech length so a truncated
+  // prefix still maps to the correct early cues.
+  const originalLen = original.length;
   const statements: Statement[] = [];
 
   for (const window of splitIntoWindows(fullText, WINDOW_CHARS)) {
+    if (maxStatements !== undefined && statements.length >= maxStatements) {
+      break;
+    }
+
     const prompt = [
       "Reconstruct and split the following raw auto-caption transcript excerpt",
       "into discrete statements. Return JSON matching the schema.",
@@ -104,6 +135,10 @@ export async function chunkTranscript(raw: RawTranscript): Promise<Statement[]> 
     let charsBefore = 0;
 
     for (const { text } of chunked) {
+      if (maxStatements !== undefined && statements.length >= maxStatements) {
+        break;
+      }
+
       const cleaned = text?.trim();
       const offsetInWindow =
         windowChars > 0 ? (charsBefore / windowChars) * window.text.length : 0;
@@ -115,13 +150,28 @@ export async function chunkTranscript(raw: RawTranscript): Promise<Statement[]> 
         text: cleaned,
         startTime: approxStartTime(
           raw.segments,
-          (window.start + offsetInWindow) / fullText.length,
+          (window.start + offsetInWindow) / originalLen,
         ),
       });
     }
   }
 
   return statements;
+}
+
+/** Keep only enough leading caption text for ~maxStatements statements. */
+function truncateForLimit(text: string, maxStatements: number): string {
+  const budget = Math.max(
+    WINDOW_CHARS,
+    maxStatements * CHARS_PER_STATEMENT_BUDGET,
+  );
+  if (text.length <= budget) return text;
+
+  // Cut on whitespace so we don't feed a torn word into the model.
+  let end = budget;
+  const space = text.lastIndexOf(" ", end);
+  if (space > budget * 0.5) end = space;
+  return text.slice(0, end).trim();
 }
 
 interface Window {

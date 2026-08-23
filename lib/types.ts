@@ -10,7 +10,7 @@
  *   YouTube URL
  *     -> getTranscript(url)      -> RawTranscript      (lib/transcript.ts)
  *     -> chunkTranscript(raw)    -> Statement[]        (lib/chunk.ts, Claude)
- *     -> extractClaims(stmt)     -> Claim[]            (lib/extract.ts, Claude)
+ *     -> extractClaimsBatch(...) -> Claim[] per stmt   (lib/extract.ts, Claude)
  *     -> verifyClaim(claim)      -> VerifiedClaim      (lib/verify.ts, Claude + web search)
  *     -> streamed as FeedItem    (app/api/factcheck/route.ts -> app/page.tsx)
  */

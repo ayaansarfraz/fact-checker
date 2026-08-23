@@ -1,19 +1,28 @@
 /**
  * Part 5: the whole pipeline, wired together.
  *
- *   getTranscript(url) -> chunkTranscript(raw) -> [extractClaims -> verifyClaim]*
+ *   getTranscript(url) -> chunkTranscript(raw) -> [extractClaimsBatch -> verifyClaim]*
  *
  * This is the single source of truth for stage orchestration. Both consumers
  * build on it: the SSE route (`app/api/factcheck/route.ts`) forwards each
  * callback as a stream frame, and the CLI (`scripts/factcheck.ts`) prints them.
  */
-import type { FeedError, FeedItem, Statement, VerifiedClaim } from "@/lib/types";
+import type {
+  Claim,
+  FeedError,
+  FeedItem,
+  Statement,
+  VerifiedClaim,
+} from "@/lib/types";
 import { getTranscript } from "@/lib/transcript";
 import { chunkTranscript } from "@/lib/chunk";
-import { extractClaims } from "@/lib/extract";
+import { EXTRACT_BATCH_SIZE, extractClaimsBatch } from "@/lib/extract";
 import { verifyClaim } from "@/lib/verify";
+import { DEFAULT_UI_LIMIT } from "@/lib/limits";
 
-/** How many statements to extract+verify at once (bounded fan-out). */
+export { DEFAULT_UI_LIMIT };
+
+/** How many claims to verify at once (bounded fan-out). */
 export const DEFAULT_CONCURRENCY = 4;
 
 export interface PipelineCallbacks {
@@ -31,9 +40,9 @@ export interface PipelineCallbacks {
 export interface PipelineOptions extends PipelineCallbacks {
   concurrency?: number;
   /**
-   * Process only the first N statements. Verification runs a web search per
-   * claim, so a full speech is slow and not free — the CLI exposes this to
-   * keep a smoke test cheap. Undefined means the whole speech.
+   * Process only the first N statements. Applied *before* chunking so a
+   * limited run does not pay to reconstruct the whole speech. Verification
+   * still runs a web search per claim. Undefined means the whole speech.
    */
   limit?: number;
 }
@@ -70,61 +79,79 @@ export async function runPipeline(
     `Transcript: ${raw.title ?? raw.videoId} — ${raw.segments.length} cues, ${raw.fullText.length} chars`,
   );
 
-  // 2. Clean + chunk into statements (fatal).
+  // 2. Clean + chunk into statements (fatal). Limit is applied here so we do
+  //    not spend N windowed model calls reconstructing text we will discard.
   let statements: Statement[];
   try {
-    statements = await chunkTranscript(raw);
+    statements = await chunkTranscript(raw, {
+      maxStatements: options.limit,
+    });
   } catch (err) {
     fail("chunk", err);
     return;
   }
-  onProgress?.(`Statements: ${statements.length}`);
 
   if (options.limit !== undefined && statements.length > options.limit) {
     statements = statements.slice(0, options.limit);
-    onProgress?.(`Limited to the first ${statements.length} statements.`);
   }
+  onProgress?.(
+    options.limit !== undefined
+      ? `Statements: ${statements.length} (limit ${options.limit})`
+      : `Statements: ${statements.length}`,
+  );
 
-  // 3 + 4. Per statement: extract claims, then verify each. A failure here is
-  //        scoped to one statement/claim — report it and keep processing.
-  const processStatement = async (statement: Statement) => {
-    let claims;
+  if (statements.length === 0) return;
+
+  // 3 + 4. Extract in batches (one call per ~15 statements), then verify each
+  //        claim. Emit items as each batch finishes so the UI still streams.
+  for (let i = 0; i < statements.length; i += EXTRACT_BATCH_SIZE) {
+    const batch = statements.slice(i, i + EXTRACT_BATCH_SIZE);
+
+    let claimsByStatement: Map<string, Claim[]>;
     try {
-      claims = await extractClaims(statement);
+      claimsByStatement = await extractClaimsBatch(batch);
+      onProgress?.(
+        `Extracted claims for statements ${i + 1}–${i + batch.length} of ${statements.length}`,
+      );
     } catch (err) {
       fail("extract", err);
-      return;
+      continue;
     }
 
-    const settled = await Promise.allSettled(
-      claims.map((claim) => verifyClaim(claim)),
-    );
+    const verifiedByIndex: VerifiedClaim[][] = batch.map(() => []);
+    const verifyJobs: { batchIndex: number; claim: Claim }[] = [];
 
-    const verified: VerifiedClaim[] = [];
-    for (const result of settled) {
-      if (result.status === "fulfilled") verified.push(result.value);
-      else fail("verify", result.reason);
+    for (let j = 0; j < batch.length; j++) {
+      for (const claim of claimsByStatement.get(batch[j].id) ?? []) {
+        verifyJobs.push({ batchIndex: j, claim });
+      }
     }
 
-    // Emit the statement even if it produced no claims.
-    onItem({ statement, claims: verified });
-  };
+    let nextJob = 0;
+    const verifyWorker = async () => {
+      while (nextJob < verifyJobs.length) {
+        const job = verifyJobs[nextJob++];
+        try {
+          verifiedByIndex[job.batchIndex].push(await verifyClaim(job.claim));
+        } catch (err) {
+          fail("verify", err);
+        }
+      }
+    };
 
-  // Bounded worker pool: workers pull the next statement index until drained.
-  let nextIndex = 0;
-  const worker = async () => {
-    while (nextIndex < statements.length) {
-      const index = nextIndex++;
-      await processStatement(statements[index]);
+    if (verifyJobs.length > 0) {
+      const poolSize = Math.min(concurrency, verifyJobs.length);
+      try {
+        await Promise.all(
+          Array.from({ length: poolSize }, () => verifyWorker()),
+        );
+      } catch (err) {
+        fail("unknown", err);
+      }
     }
-  };
 
-  const poolSize = Math.min(concurrency, statements.length);
-  try {
-    await Promise.all(Array.from({ length: poolSize }, () => worker()));
-  } catch (err) {
-    // Defensive: processStatement swallows its own errors, so this only trips
-    // on something unexpected.
-    fail("unknown", err);
+    for (let j = 0; j < batch.length; j++) {
+      onItem({ statement: batch[j], claims: verifiedByIndex[j] });
+    }
   }
 }

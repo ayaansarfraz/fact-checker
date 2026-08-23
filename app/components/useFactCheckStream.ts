@@ -96,9 +96,13 @@ export function useFactCheckStream() {
     setStatus("done");
   }, []);
 
-  /** Start a run. `useMock` swaps in the local mock stream instead of the API. */
+  /**
+   * Start a run. `useMock` swaps in the local mock stream instead of the API.
+   * `limit` caps statements (defaulted by the API when omitted); pass `null`
+   * for the whole speech.
+   */
   const start = useCallback(
-    async (url: string, useMock = false) => {
+    async (url: string, useMock = false, limit?: number | null) => {
       abortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;
@@ -113,10 +117,13 @@ export function useFactCheckStream() {
         if (useMock) {
           body = mockSSEStream();
         } else {
+          const payload: { url: string; limit?: number | null } = { url };
+          if (limit !== undefined) payload.limit = limit;
+
           const res = await fetch("/api/factcheck", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ url }),
+            body: JSON.stringify(payload),
             signal: controller.signal,
           });
 

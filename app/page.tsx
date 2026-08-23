@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import type { Verdict } from "@/lib/types";
+import { DEFAULT_UI_LIMIT } from "@/lib/limits";
 import FeedItemCard from "./components/FeedItemCard";
 import { useFactCheckStream } from "./components/useFactCheckStream";
 
@@ -26,6 +27,8 @@ function Spinner() {
 export default function Home() {
   const [url, setUrl] = useState("");
   const [useMock, setUseMock] = useState(false);
+  const [limitInput, setLimitInput] = useState(String(DEFAULT_UI_LIMIT));
+  const [unlimited, setUnlimited] = useState(false);
   const { items, errors, status, start, stop } = useFactCheckStream();
 
   const isStreaming = status === "streaming";
@@ -49,7 +52,17 @@ export default function Home() {
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (isStreaming || !canSubmit) return;
-    void start(url.trim(), useMock);
+
+    let limit: number | null = DEFAULT_UI_LIMIT;
+    if (unlimited) {
+      limit = null;
+    } else {
+      const parsed = Number(limitInput);
+      if (!Number.isInteger(parsed) || parsed < 1) return;
+      limit = parsed;
+    }
+
+    void start(url.trim(), useMock, limit);
   }
 
   return (
@@ -94,17 +107,41 @@ export default function Home() {
               </button>
             )}
           </div>
-          {/* Lets the feed be exercised end to end without a working backend. */}
-          <label className="flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
-            <input
-              type="checkbox"
-              checked={useMock}
-              onChange={(e) => setUseMock(e.target.checked)}
-              disabled={isStreaming}
-              className="h-3.5 w-3.5 accent-zinc-900 dark:accent-zinc-100"
-            />
-            Demo mode (mock stream, no API call)
-          </label>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-zinc-500 dark:text-zinc-400">
+            <label className="flex items-center gap-2">
+              <span>Statements</span>
+              <input
+                type="number"
+                min={1}
+                step={1}
+                value={limitInput}
+                onChange={(e) => setLimitInput(e.target.value)}
+                disabled={isStreaming || unlimited}
+                className="w-16 rounded-md border border-zinc-300 bg-white px-2 py-1 text-zinc-900 disabled:opacity-60 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+              />
+            </label>
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={unlimited}
+                onChange={(e) => setUnlimited(e.target.checked)}
+                disabled={isStreaming}
+                className="h-3.5 w-3.5 accent-zinc-900 dark:accent-zinc-100"
+              />
+              Whole speech (expensive)
+            </label>
+            {/* Lets the feed be exercised end to end without a working backend. */}
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={useMock}
+                onChange={(e) => setUseMock(e.target.checked)}
+                disabled={isStreaming}
+                className="h-3.5 w-3.5 accent-zinc-900 dark:accent-zinc-100"
+              />
+              Demo mode (mock stream, no API call)
+            </label>
+          </div>
         </form>
 
         {/* Status line: spinner while streaming, verdict tally once claims land. */}
